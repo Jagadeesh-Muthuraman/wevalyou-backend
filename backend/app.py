@@ -16,7 +16,7 @@ app.secret_key = "wevalyou-secret-key"
 
 CORS(app)
 
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///../database/wevalyou.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///wevalyou.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
@@ -54,7 +54,9 @@ class HRUser(db.Model):
 
 
 
-client = Client(ACCOUNT_SID, AUTH_TOKEN)
+client = None
+if ACCOUNT_SID and AUTH_TOKEN:
+    client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 # Map employee WhatsApp number → company_id
 WHATSAPP_COMPANY_MAP = {
