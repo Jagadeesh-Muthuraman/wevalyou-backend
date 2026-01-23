@@ -9,7 +9,7 @@ import os
 
 ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-HR_WHATSAPP = os.getenv("whatsapp:HR_WHATSAPP")
+HR_WHATSAPP = os.getenv("HR_WHATSAPP")
 
 app = Flask(__name__)
 app.secret_key = "wevalyou-secret-key"
