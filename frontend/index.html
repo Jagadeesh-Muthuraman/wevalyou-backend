@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WeValYou – Complaint</title>
+</head>
+<body>
+
+    <h2>Submit a Complaint</h2>
+
+    <textarea id="message" placeholder="Enter your complaint"></textarea>
+    <br><br>
+
+    <label>
+        <input type="checkbox" id="anonymous" checked>
+        Submit Anonymously
+    </label>
+    <br><br>
+
+    <button onclick="submitComplaint()">Submit</button>
+
+    <script>
+        function submitComplaint() {
+            const message = document.getElementById("message").value;
+            const anonymous = document.getElementById("anonymous").checked;
+
+            fetch("http://127.0.0.1:5000/complaint", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    message: message,
+                    anonymous: anonymous
+                })
+            })
+            .then(res => res.json())
+            .then(data => alert(data.message));
+        }
+    </script>
+
+</body>
+</html>
