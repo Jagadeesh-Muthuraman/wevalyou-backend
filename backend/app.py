@@ -392,6 +392,26 @@ def create_hr():
 
     return "HR user created: hr@demo.com / hr123"
 
+@app.route("/register_employee")
+def register_employee():
+    phone = request.args.get("phone")
+
+    company = Company.query.first()
+    if not company:
+        company = Company(name="Default Company")
+        db.session.add(company)
+        db.session.commit()
+
+    existing = Employee.query.filter_by(phone=phone).first()
+    if existing:
+        return "Employee already exists"
+
+    emp = Employee(phone=phone, company_id=company.id)
+    db.session.add(emp)
+    db.session.commit()
+
+    return "Employee registered"
+
 # ✅ Ensure database tables exist on startup (Render compatible)
 with app.app_context():
     db.create_all()
