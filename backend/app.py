@@ -348,18 +348,23 @@ def complaint():
 
 @app.route("/setup")
 def setup():
-    company = Company(name="Demo IT Company")
-    db.session.add(company)
-    db.session.commit()
+    sender = "whatsapp:+91YOURNUMBER"  # replace once
 
-    employee = Employee(
-        phone="whatsapp:+91YOURNUMBER",
-        company_id=company.id,
-        name="Test Employee"
-    )
+    company = Company.query.first()
+    if not company:
+        company = Company(name="Demo IT Company")
+        db.session.add(company)
+        db.session.commit()
 
-    db.session.add(employee)
-    db.session.commit()
+    existing = Employee.query.filter_by(phone=sender).first()
+    if not existing:
+        employee = Employee(
+            phone=sender,
+            company_id=company.id,
+            name="Test Employee"
+        )
+        db.session.add(employee)
+        db.session.commit()
 
     return "Setup complete"
 
