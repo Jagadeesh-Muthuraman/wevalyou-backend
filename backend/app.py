@@ -59,9 +59,6 @@ if ACCOUNT_SID and AUTH_TOKEN:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 # Map employee WhatsApp number → company_id
-WHATSAPP_COMPANY_MAP = {
-    "whatsappnumber": 1   # replace with employee number
-}
 
 user_sessions = {}
 
@@ -74,6 +71,13 @@ class Company(db.Model):
     name = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Employee(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    phone = db.Column(db.String(30), unique=True, nullable=False)
+    company_id = db.Column(db.Integer, db.ForeignKey("company.id"), nullable=False)
+    name = db.Column(db.String(100))
+
+    company = db.relationship("Company", backref="employees")
 
 class Complaint(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -192,95 +196,125 @@ def whatsapp():
     resp = MessagingResponse()
     reply = resp.message()
 
-    # Initialize session
+    # Create session if new user
     if sender not in user_sessions:
         user_sessions[sender] = {}
 
     session_data = user_sessions[sender]
 
-    # 1️⃣ START COMPLAINT
-    if incoming_lower in ["complaint", "posh"]:
+    # =========================
+    # START GENERAL COMPLAINT
+    # =========================
+    if incoming_lower == "complaint":
         session_data.clear()
-        session_data["complaint_type"] = "POSH" if incoming_lower == "posh" else "GENERAL"
+        session_data["complaint_type"] = "GENERAL"
         session_data["step"] = "ask_anonymous"
+
         reply.body("Do you want to stay anonymous? Reply YES or NO")
         return str(resp)
 
-    # 2️⃣ ASK ANONYMOUS
+    # =========================
+    # START POSH COMPLAINT
+    # =========================
+    if incoming_lower == "posh":
+        session_data.clear()
+        session_data["complaint_type"] = "POSH"
+        session_data["step"] = "ask_anonymous"
+
+        reply.body("🚨 POSH Complaint Started.\nDo you want to stay anonymous? Reply YES or NO")
+        return str(resp)
+
+    # =========================
+    # ASK ANONYMOUS
+    # =========================
     if session_data.get("step") == "ask_anonymous":
+
         if incoming_lower == "yes":
             session_data["anonymous"] = True
         elif incoming_lower == "no":
             session_data["anonymous"] = False
         else:
-            reply.body("Reply YES or NO")
+            reply.body("Please reply YES or NO")
             return str(resp)
 
+        # Decide next step
         if session_data["complaint_type"] == "POSH":
-            session_data["step"] = "get_incident_date"
-            reply.body("POSH Complaint: Enter incident date (DD/MM/YYYY)")
+            session_data["step"] = "get_date"
+            reply.body("Enter incident date (DD/MM/YYYY)")
         else:
             session_data["step"] = "get_message"
             reply.body("Please type your complaint")
 
         return str(resp)
 
-    # 3️⃣ POSH – INCIDENT DATE
-    if session_data.get("step") == "get_incident_date":
+    # =========================
+    # POSH DATE
+    # =========================
+    if session_data.get("step") == "get_date":
         session_data["incident_date"] = incoming_msg
         session_data["step"] = "get_location"
-        reply.body("POSH Complaint: Enter location of incident")
+
+        reply.body("Enter incident location")
         return str(resp)
 
-    # 4️⃣ POSH – LOCATION
+    # =========================
+    # POSH LOCATION
+    # =========================
     if session_data.get("step") == "get_location":
         session_data["location"] = incoming_msg
         session_data["step"] = "get_message"
+
         reply.body("Please describe the incident")
         return str(resp)
 
-    # 5️⃣ FINAL MESSAGE (SAVE COMPLAINT)
+    # =========================
+    # FINAL MESSAGE SAVE
+    # =========================
     if session_data.get("step") == "get_message":
+
         complaint_text = incoming_msg
-        company_id = WHATSAPP_COMPANY_MAP.get(sender)
-    if not company_id:
-        reply.body("Your company is not registered. Contact HR.")
+
+        employee = Employee.query.filter_by(phone=sender).first()
+
+        if not employee:
+            reply.body("Your number is not registered with any company HR.")
+            return str(resp)
+
+        company_id = employee.company_id
+        new_complaint = Complaint(
+            company_id=company_id,
+            message=complaint_text,
+            anonymous=session_data.get("anonymous", True),
+            sender=None if session_data.get("anonymous") else sender,
+            complaint_type=session_data.get("complaint_type", "GENERAL"),
+            incident_date=session_data.get("incident_date"),
+            location=session_data.get("location"),
+            status="Open"
+        )
+
+        db.session.add(new_complaint)
+        db.session.commit()
+
+        # Notify HR
+        if client and HR_WHATSAPP:
+            try:
+                client.messages.create(
+                    from_="whatsapp:+14155238886",
+                    to=HR_WHATSAPP,
+                    body=f"🚨 New {new_complaint.complaint_type} Complaint:\n\n{complaint_text}"
+                )
+            except Exception as e:
+                print("HR notification failed:", e)
+
+        reply.body("✅ Complaint submitted successfully.")
+        user_sessions.pop(sender, None)
+
         return str(resp)
 
-    new_complaint = Complaint(
-        company_id=company_id,
-        message=complaint_text,
-        anonymous=session_data.get("anonymous", True),
-        sender=None if session_data.get("anonymous") else sender,
-        complaint_type=session_data.get("complaint_type", "GENERAL"),
-        incident_date=session_data.get("incident_date"),
-        location=session_data.get("location")
-    )
-
-    db.session.add(new_complaint)
-    db.session.commit()
-
-    # ✅ MUST reply immediately
-    reply.body("✅ Your POSH complaint has been submitted successfully.")
-
-    # 🔔 HR notification must NEVER block reply
-    try:
-        client.messages.create(
-            from_="whatsapp:+14155238886",
-            to=HR_WHATSAPP,
-            body=f"""🚨 POSH COMPLAINT
-Date: {new_complaint.incident_date}
-Location: {new_complaint.location}
-Message: {complaint_text}"""
-        )
-    except Exception as e:
-        print("HR notification failed:", e)
-
-    user_sessions.pop(sender, None)
-    return str(resp)
-
-    # DEFAULT FALLBACK
-    reply.body("Type 'complaint' or 'posh' to submit a complaint")
+    # =========================
+    # DEFAULT MESSAGE
+    # =========================
+    reply.body("Type 'complaint' or 'posh' to start.")
     return str(resp)
 
 # ---- Web / App API ----
@@ -311,6 +345,24 @@ def complaint():
         "complaint_id": new_complaint.id
     }), 201
 
+
+@app.route("/setup")
+def setup():
+    company = Company(name="Demo IT Company")
+    db.session.add(company)
+    db.session.commit()
+
+    employee = Employee(
+        phone="whatsapp:+91YOURNUMBER",
+        company_id=company.id,
+        name="Test Employee"
+    )
+
+    db.session.add(employee)
+    db.session.commit()
+
+    return "Setup complete"
+
 # =====================
 # RUN
 # =====================
@@ -332,7 +384,11 @@ def create_hr():
 
     return "HR user created: hr@demo.com / hr123"
 
+# ✅ Ensure database tables exist on startup (Render compatible)
+with app.app_context():
+    db.create_all()
+
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-    app.run(host="0.0.0.0", port=10000)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
