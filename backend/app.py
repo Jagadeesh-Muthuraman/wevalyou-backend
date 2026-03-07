@@ -395,7 +395,8 @@ def create_hr():
 
 @app.route("/register_employee")
 def register_employee():
-    phone = request.args.get("phone").replace("whatsapp:", "")
+    phone = request.args.get("phone")
+    phone = phone.replace("whatsapp:", "").replace(" ", "")
 
     company = Company.query.first()
     if not company:
