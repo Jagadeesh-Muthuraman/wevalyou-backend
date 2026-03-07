@@ -1,330 +1,30 @@
-from flask import Flask, request, jsonify, session, redirect
-from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
-from datetime import datetime
-from twilio.rest import Client
-from twilio.twiml.messaging_response import MessagingResponse
-from werkzeug.security import generate_password_hash, check_password_hash
-import os
-
-ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-HR_WHATSAPP = os.getenv("HR_WHATSAPP")
-
-app = Flask(__name__)
-app.secret_key = "wevalyou-secret-key"
-
-CORS(app)
-
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///wevalyou.db"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
-db = SQLAlchemy(app)
-
-from flask_migrate import Migrate
-migrate = Migrate(app, db)
-
-# =====================
-# PHONE NORMALIZATION
-# =====================
-
-def normalize_phone(phone):
-    phone = phone.replace("whatsapp:", "").replace(" ", "").strip()
-
-    if phone.startswith("91") and not phone.startswith("+"):
-        phone = "+" + phone
-
-    if not phone.startswith("+"):
-        phone = "+91" + phone
-
-    return phone
-
-# =====================
-# TWILIO CLIENT
-# =====================
-
-client = None
-if ACCOUNT_SID and AUTH_TOKEN:
-    client = Client(ACCOUNT_SID, AUTH_TOKEN)
-
-# Store conversation state
-user_sessions = {}
-
-# =====================
-# MODELS
-# =====================
-
-class Company(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class HRUser(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
-    company_id = db.Column(db.Integer, db.ForeignKey("company.id"), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    company = db.relationship("Company", backref="hr_users")
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-class Employee(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    phone = db.Column(db.String(30), unique=True, nullable=False)
-    company_id = db.Column(db.Integer, db.ForeignKey("company.id"), nullable=False)
-    name = db.Column(db.String(100))
-
-    company = db.relationship("Company", backref="employees")
-
-class Complaint(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    company_id = db.Column(db.Integer, db.ForeignKey("company.id"), nullable=False)
-    message = db.Column(db.Text, nullable=False)
-    anonymous = db.Column(db.Boolean, default=True)
-    sender = db.Column(db.String(50))
-    status = db.Column(db.String(20), default="Open")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    complaint_type = db.Column(db.String(20), default="GENERAL")
-    incident_date = db.Column(db.String(50))
-    location = db.Column(db.String(100))
-
-    company = db.relationship("Company", backref="complaints")
-
-# =====================
-# BASIC ROUTES
-# =====================
-
-@app.route("/")
-def home():
-    return "WeValYou backend is running"
-
-@app.route("/test")
-def test():
-    return "TEST ROUTE WORKING"
-
-# =====================
-# COMPANY SIGNUP
-# =====================
-
-@app.route("/signup", methods=["GET", "POST"])
-def signup():
-
-    if request.method == "POST":
-
-        company_name = request.form.get("company_name")
-        email = request.form.get("email")
-        password = request.form.get("password")
-
-        if not company_name or not email or not password:
-            return "All fields required"
-
-        company = Company(name=company_name)
-        db.session.add(company)
-        db.session.commit()
-
-        hr = HRUser(email=email, company_id=company.id)
-        hr.set_password(password)
-
-        db.session.add(hr)
-        db.session.commit()
-
-        return redirect("/login")
-
-    return """
-    <h2>Create Company Account</h2>
-    <form method="post">
-        Company Name: <input name="company_name"><br>
-        Email: <input name="email"><br>
-        Password: <input name="password" type="password"><br><br>
-        <button type="submit">Create Account</button>
-    </form>
-    """
-
-# =====================
-# HR LOGIN
-# =====================
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-
-    if request.method == "POST":
-
-        email = request.form.get("email")
-        password = request.form.get("password")
-
-        hr = HRUser.query.filter_by(email=email).first()
-
-        if hr and hr.check_password(password):
-
-            session["hr_logged_in"] = True
-            session["hr_id"] = hr.id
-            session["company_id"] = hr.company_id
-
-            return redirect("/hr")
-
-        return "Invalid credentials"
-
-    return """
-    <h2>HR Login</h2>
-    <form method="post">
-        Email: <input name="email"><br>
-        Password: <input name="password" type="password"><br><br>
-        <button type="submit">Login</button>
-    </form>
-    """
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/login")
-
-# =====================
-# HR DASHBOARD
-# =====================
-
-@app.route("/hr")
-def hr_dashboard():
-
-    if not session.get("hr_logged_in"):
-        return redirect("/login")
-
-    company_id = session.get("company_id")
-
-    complaints = Complaint.query.filter_by(
-        company_id=company_id
-    ).order_by(Complaint.created_at.desc()).all()
-
-    html = """
-    <h2>HR Dashboard – Complaints</h2>
-
-    <a href="/logout">Logout</a>
-
-    <hr>
-
-    <h3>Add Employee</h3>
-
-    <form method="post" action="/add_employee">
-    Name: <input name="name"><br>
-    Phone: <input name="phone"><br>
-    <button type="submit">Add Employee</button>
-    </form>
-
-    <hr>
-
-    <table border="1" cellpadding="10">
-    <tr>
-    <th>ID</th>
-    <th>Message</th>
-    <th>Anonymous</th>
-    <th>Sender</th>
-    <th>Status</th>
-    <th>Date</th>
-    <th>Actions</th>
-    </tr>
-    """
-
-    for c in complaints:
-
-        sender = "Hidden" if c.anonymous else c.sender
-
-        html += f"""
-        <tr>
-        <td>{c.id}</td>
-        <td>{c.message}</td>
-        <td>{c.anonymous}</td>
-        <td>{sender}</td>
-        <td>{c.status}</td>
-        <td>{c.created_at}</td>
-        <td>
-        <a href="/update_status/{c.id}/Investigating">Investigating</a> |
-        <a href="/update_status/{c.id}/Resolved">Resolved</a>
-        </td>
-        </tr>
-        """
-
-    html += "</table>"
-
-    return html
-
-# =====================
-# ADD EMPLOYEE
-# =====================
-
-@app.route("/add_employee", methods=["POST"])
-def add_employee():
-
-    if not session.get("hr_logged_in"):
-        return redirect("/login")
-
-    phone = normalize_phone(request.form.get("phone"))
-    name = request.form.get("name")
-
-    company_id = session.get("company_id")
-
-    existing = Employee.query.filter_by(phone=phone).first()
-
-    if existing:
-        return "Employee already exists"
-
-    emp = Employee(phone=phone, name=name, company_id=company_id)
-
-    db.session.add(emp)
-    db.session.commit()
-
-    return redirect("/hr")
-
-# =====================
-# UPDATE COMPLAINT STATUS
-# =====================
-
-@app.route("/update_status/<int:complaint_id>/<status>")
-def update_status(complaint_id, status):
-
-    if not session.get("hr_logged_in"):
-        return redirect("/login")
-
-    complaint = Complaint.query.get(complaint_id)
-
-    if not complaint:
-        return "Complaint not found"
-
-    complaint.status = status
-    db.session.commit()
-
-    return redirect("/hr")
-
-# =====================
-# WHATSAPP BOT
-# =====================
-
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
 
     incoming_msg = request.form.get("Body", "").strip()
     incoming_lower = incoming_msg.lower()
 
-    sender = normalize_phone(request.form.get("From"))
+    raw_sender = request.form.get("From")
+    sender = normalize_phone(raw_sender)
 
-    print("WHATSAPP SENDER:", sender)
+    print("MESSAGE RECEIVED:", incoming_msg)
+    print("SENDER:", sender)
 
     resp = MessagingResponse()
     reply = resp.message()
 
+    # ensure user session exists
     if sender not in user_sessions:
         user_sessions[sender] = {}
 
     session_data = user_sessions[sender]
-    print("SESSION STATE:", session_data)
-    print("INCOMING:", incoming_msg)
 
-    if incoming_lower == "complaint":
+    print("SESSION:", session_data)
+
+    # =========================
+    # START GENERAL COMPLAINT
+    # =========================
+    if incoming_lower in ["complaint", "start", "hi"]:
 
         session_data.clear()
         session_data["complaint_type"] = "GENERAL"
@@ -334,22 +34,28 @@ def whatsapp():
 
         return str(resp)
 
+    # =========================
+    # START POSH COMPLAINT
+    # =========================
     if incoming_lower == "posh":
 
         session_data.clear()
         session_data["complaint_type"] = "POSH"
         session_data["step"] = "ask_anonymous"
 
-        reply.body("🚨 POSH Complaint Started\n\nDo you want to stay anonymous? Reply YES or NO")
+        reply.body("🚨 POSH Complaint Started.\nDo you want to stay anonymous? Reply YES or NO")
 
         return str(resp)
 
+    # =========================
+    # ASK ANONYMOUS
+    # =========================
     if session_data.get("step") == "ask_anonymous":
 
-        if incoming_lower == "yes":
+        if incoming_lower in ["yes", "y"]:
             session_data["anonymous"] = True
 
-        elif incoming_lower == "no":
+        elif incoming_lower in ["no", "n"]:
             session_data["anonymous"] = False
 
         else:
@@ -357,17 +63,18 @@ def whatsapp():
             return str(resp)
 
         if session_data["complaint_type"] == "POSH":
-
             session_data["step"] = "get_date"
             reply.body("Enter incident date (DD/MM/YYYY)")
 
         else:
-
             session_data["step"] = "get_message"
             reply.body("Please type your complaint")
 
         return str(resp)
 
+    # =========================
+    # POSH DATE
+    # =========================
     if session_data.get("step") == "get_date":
 
         session_data["incident_date"] = incoming_msg
@@ -377,6 +84,9 @@ def whatsapp():
 
         return str(resp)
 
+    # =========================
+    # POSH LOCATION
+    # =========================
     if session_data.get("step") == "get_location":
 
         session_data["location"] = incoming_msg
@@ -386,6 +96,9 @@ def whatsapp():
 
         return str(resp)
 
+    # =========================
+    # SAVE COMPLAINT
+    # =========================
     if session_data.get("step") == "get_message":
 
         complaint_text = incoming_msg
@@ -413,6 +126,7 @@ def whatsapp():
         db.session.add(new_complaint)
         db.session.commit()
 
+        # notify HR
         if client and HR_WHATSAPP:
 
             try:
@@ -439,104 +153,17 @@ Company ID: {company_id}
 
         return str(resp)
 
+    # =========================
+    # DEFAULT MESSAGE
+    # =========================
     reply.body("""
 Welcome to WeValYou.
 
-Type:
-complaint → Workplace complaint
-posh → POSH harassment complaint
+To submit a complaint type:
+complaint
+
+For POSH harassment complaint type:
+posh
 """)
 
     return str(resp)
-
-# =====================
-# API
-# =====================
-
-@app.route("/complaint", methods=["POST"])
-def complaint():
-
-    data = request.json
-
-    company_id = data.get("company_id")
-    message = data.get("message")
-    anonymous = data.get("anonymous", True)
-    sender = data.get("sender")
-
-    if not company_id or not message:
-        return jsonify({"error": "company_id and message required"}), 400
-
-    new_complaint = Complaint(
-        company_id=company_id,
-        message=message,
-        anonymous=anonymous,
-        sender=sender if not anonymous else None
-    )
-
-    db.session.add(new_complaint)
-    db.session.commit()
-
-    return jsonify({
-        "status": "success",
-        "complaint_id": new_complaint.id
-    }), 201
-
-# =====================
-# DEBUG ROUTES
-# =====================
-
-@app.route("/register_employee")
-def register_employee():
-
-    phone = normalize_phone(request.args.get("phone"))
-
-    company = Company.query.first()
-
-    if not company:
-
-        company = Company(name="Default Company")
-
-        db.session.add(company)
-        db.session.commit()
-
-    existing = Employee.query.filter_by(phone=phone).first()
-
-    if existing:
-        return "Employee already exists"
-
-    emp = Employee(phone=phone, company_id=company.id)
-
-    db.session.add(emp)
-    db.session.commit()
-
-    return "Employee registered"
-
-@app.route("/employees")
-def list_employees():
-
-    employees = Employee.query.all()
-
-    data = []
-
-    for e in employees:
-
-        data.append({
-            "id": e.id,
-            "phone": e.phone,
-            "company_id": e.company_id
-        })
-
-    return jsonify(data)
-
-# =====================
-# START SERVER
-# =====================
-
-with app.app_context():
-    db.create_all()
-
-if __name__ == "__main__":
-
-    port = int(os.environ.get("PORT", 5000))
-
-    app.run(host="0.0.0.0", port=port)
