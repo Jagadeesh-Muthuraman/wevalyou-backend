@@ -24,6 +24,10 @@ db = SQLAlchemy(app)
 from flask_migrate import Migrate
 migrate = Migrate(app, db)
 
+# =====================
+# PHONE NORMALIZATION
+# =====================
+
 def normalize_phone(phone):
     phone = phone.replace("whatsapp:", "").replace(" ", "").strip()
 
@@ -35,45 +39,15 @@ def normalize_phone(phone):
 
     return phone
 
-class HRUser(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
-
-    company_id = db.Column(
-        db.Integer,
-        db.ForeignKey("company.id"),
-        nullable=False
-    )
-
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    company = db.relationship("Company", backref="hr_users")
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
 # =====================
-# APP SETUP
+# TWILIO CLIENT
 # =====================
-
-
-# =====================
-# CONFIG
-# =====================
-
-
-
 
 client = None
 if ACCOUNT_SID and AUTH_TOKEN:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
-# Map employee WhatsApp number → company_id
-
+# Store conversation state
 user_sessions = {}
 
 # =====================
@@ -84,6 +58,21 @@ class Company(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class HRUser(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    company_id = db.Column(db.Integer, db.ForeignKey("company.id"), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    company = db.relationship("Company", backref="hr_users")
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
 class Employee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -101,14 +90,15 @@ class Complaint(db.Model):
     sender = db.Column(db.String(50))
     status = db.Column(db.String(20), default="Open")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    complaint_type = db.Column(db.String(20), default="GENERAL")  # GENERAL | POSH
-    incident_date = db.Column(db.String(50))   # keep string for speed
+
+    complaint_type = db.Column(db.String(20), default="GENERAL")
+    incident_date = db.Column(db.String(50))
     location = db.Column(db.String(100))
 
     company = db.relationship("Company", backref="complaints")
 
 # =====================
-# ROUTES
+# BASIC ROUTES
 # =====================
 
 @app.route("/")
@@ -119,27 +109,64 @@ def home():
 def test():
     return "TEST ROUTE WORKING"
 
-# ---- Manual company onboarding (startup phase) ----
-@app.route("/create_company")
-def create_company():
-    company = Company(name="Demo IT Company")
-    db.session.add(company)
-    db.session.commit()
-    return f"Company created with ID: {company.id}"
+# =====================
+# COMPANY SIGNUP
+# =====================
 
-# ---- HR Login ----
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+
+    if request.method == "POST":
+
+        company_name = request.form.get("company_name")
+        email = request.form.get("email")
+        password = request.form.get("password")
+
+        if not company_name or not email or not password:
+            return "All fields required"
+
+        company = Company(name=company_name)
+        db.session.add(company)
+        db.session.commit()
+
+        hr = HRUser(email=email, company_id=company.id)
+        hr.set_password(password)
+
+        db.session.add(hr)
+        db.session.commit()
+
+        return redirect("/login")
+
+    return """
+    <h2>Create Company Account</h2>
+    <form method="post">
+        Company Name: <input name="company_name"><br>
+        Email: <input name="email"><br>
+        Password: <input name="password" type="password"><br><br>
+        <button type="submit">Create Account</button>
+    </form>
+    """
+
+# =====================
+# HR LOGIN
+# =====================
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
+
     if request.method == "POST":
+
         email = request.form.get("email")
         password = request.form.get("password")
 
         hr = HRUser.query.filter_by(email=email).first()
 
         if hr and hr.check_password(password):
+
             session["hr_logged_in"] = True
             session["hr_id"] = hr.id
             session["company_id"] = hr.company_id
+
             return redirect("/hr")
 
         return "Invalid credentials"
@@ -158,9 +185,13 @@ def logout():
     session.clear()
     return redirect("/login")
 
-# ---- HR Dashboard ----
+# =====================
+# HR DASHBOARD
+# =====================
+
 @app.route("/hr")
 def hr_dashboard():
+
     if not session.get("hr_logged_in"):
         return redirect("/login")
 
@@ -172,126 +203,187 @@ def hr_dashboard():
 
     html = """
     <h2>HR Dashboard – Complaints</h2>
-    <a href="/logout">Logout</a><br><br>
+
+    <a href="/logout">Logout</a>
+
+    <hr>
+
+    <h3>Add Employee</h3>
+
+    <form method="post" action="/add_employee">
+    Name: <input name="name"><br>
+    Phone: <input name="phone"><br>
+    <button type="submit">Add Employee</button>
+    </form>
+
+    <hr>
+
     <table border="1" cellpadding="10">
-        <tr>
-            <th>ID</th>
-            <th>Message</th>
-            <th>Anonymous</th>
-            <th>Sender</th>
-            <th>Status</th>
-            <th>Date</th>
-        </tr>
+    <tr>
+    <th>ID</th>
+    <th>Message</th>
+    <th>Anonymous</th>
+    <th>Sender</th>
+    <th>Status</th>
+    <th>Date</th>
+    <th>Actions</th>
+    </tr>
     """
 
     for c in complaints:
+
         sender = "Hidden" if c.anonymous else c.sender
+
         html += f"""
         <tr>
-            <td>{c.id}</td>
-            <td>{c.message}</td>
-            <td>{c.anonymous}</td>
-            <td>{sender}</td>
-            <td>{c.status}</td>
-            <td>{c.created_at}</td>
+        <td>{c.id}</td>
+        <td>{c.message}</td>
+        <td>{c.anonymous}</td>
+        <td>{sender}</td>
+        <td>{c.status}</td>
+        <td>{c.created_at}</td>
+        <td>
+        <a href="/update_status/{c.id}/Investigating">Investigating</a> |
+        <a href="/update_status/{c.id}/Resolved">Resolved</a>
+        </td>
         </tr>
         """
 
     html += "</table>"
+
     return html
 
-# ---- WhatsApp Bot ----
+# =====================
+# ADD EMPLOYEE
+# =====================
+
+@app.route("/add_employee", methods=["POST"])
+def add_employee():
+
+    if not session.get("hr_logged_in"):
+        return redirect("/login")
+
+    phone = normalize_phone(request.form.get("phone"))
+    name = request.form.get("name")
+
+    company_id = session.get("company_id")
+
+    existing = Employee.query.filter_by(phone=phone).first()
+
+    if existing:
+        return "Employee already exists"
+
+    emp = Employee(phone=phone, name=name, company_id=company_id)
+
+    db.session.add(emp)
+    db.session.commit()
+
+    return redirect("/hr")
+
+# =====================
+# UPDATE COMPLAINT STATUS
+# =====================
+
+@app.route("/update_status/<int:complaint_id>/<status>")
+def update_status(complaint_id, status):
+
+    if not session.get("hr_logged_in"):
+        return redirect("/login")
+
+    complaint = Complaint.query.get(complaint_id)
+
+    if not complaint:
+        return "Complaint not found"
+
+    complaint.status = status
+    db.session.commit()
+
+    return redirect("/hr")
+
+# =====================
+# WHATSAPP BOT
+# =====================
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
+
     incoming_msg = request.form.get("Body", "").strip()
     incoming_lower = incoming_msg.lower()
+
     sender = normalize_phone(request.form.get("From"))
+
     print("WHATSAPP SENDER:", sender)
 
     resp = MessagingResponse()
     reply = resp.message()
 
-    # Create session if new user
     if sender not in user_sessions:
         user_sessions[sender] = {}
 
     session_data = user_sessions[sender]
 
-    # =========================
-    # START GENERAL COMPLAINT
-    # =========================
     if incoming_lower == "complaint":
+
         session_data.clear()
         session_data["complaint_type"] = "GENERAL"
         session_data["step"] = "ask_anonymous"
 
         reply.body("Do you want to stay anonymous? Reply YES or NO")
+
         return str(resp)
 
-    # =========================
-    # START POSH COMPLAINT
-    # =========================
     if incoming_lower == "posh":
+
         session_data.clear()
         session_data["complaint_type"] = "POSH"
         session_data["step"] = "ask_anonymous"
 
-        body=f"""
-🚨 New {new_complaint.complaint_type} Complaint
+        reply.body("🚨 POSH Complaint Started\n\nDo you want to stay anonymous? Reply YES or NO")
 
-Message:
-{complaint_text}
-
-Company ID: {company_id}
-"""
         return str(resp)
 
-    # =========================
-    # ASK ANONYMOUS
-    # =========================
     if session_data.get("step") == "ask_anonymous":
 
         if incoming_lower == "yes":
             session_data["anonymous"] = True
+
         elif incoming_lower == "no":
             session_data["anonymous"] = False
+
         else:
             reply.body("Please reply YES or NO")
             return str(resp)
 
-        # Decide next step
         if session_data["complaint_type"] == "POSH":
+
             session_data["step"] = "get_date"
             reply.body("Enter incident date (DD/MM/YYYY)")
+
         else:
+
             session_data["step"] = "get_message"
             reply.body("Please type your complaint")
 
         return str(resp)
 
-    # =========================
-    # POSH DATE
-    # =========================
     if session_data.get("step") == "get_date":
+
         session_data["incident_date"] = incoming_msg
         session_data["step"] = "get_location"
 
         reply.body("Enter incident location")
+
         return str(resp)
 
-    # =========================
-    # POSH LOCATION
-    # =========================
     if session_data.get("step") == "get_location":
+
         session_data["location"] = incoming_msg
         session_data["step"] = "get_message"
 
         reply.body("Please describe the incident")
+
         return str(resp)
 
-    # =========================
-    # FINAL MESSAGE SAVE
-    # =========================
     if session_data.get("step") == "get_message":
 
         complaint_text = incoming_msg
@@ -299,10 +391,12 @@ Company ID: {company_id}
         employee = Employee.query.filter_by(phone=sender).first()
 
         if not employee:
+
             reply.body("Your number is not registered with any company HR.")
             return str(resp)
 
         company_id = employee.company_id
+
         new_complaint = Complaint(
             company_id=company_id,
             message=complaint_text,
@@ -317,31 +411,49 @@ Company ID: {company_id}
         db.session.add(new_complaint)
         db.session.commit()
 
-        # Notify HR
         if client and HR_WHATSAPP:
+
             try:
+
                 client.messages.create(
                     from_="whatsapp:+14155238886",
                     to=HR_WHATSAPP,
-                    body=f"🚨 New {new_complaint.complaint_type} Complaint:\n\n{complaint_text}"
+                    body=f"""
+🚨 New {new_complaint.complaint_type} Complaint
+
+Message:
+{complaint_text}
+
+Company ID: {company_id}
+"""
                 )
+
             except Exception as e:
                 print("HR notification failed:", e)
 
         reply.body("✅ Complaint submitted successfully.")
+
         user_sessions.pop(sender, None)
 
         return str(resp)
 
-    # =========================
-    # DEFAULT MESSAGE
-    # =========================
-    reply.body("Type 'complaint' or 'posh' to start.")
+    reply.body("""
+Welcome to WeValYou.
+
+Type:
+complaint → Workplace complaint
+posh → POSH harassment complaint
+""")
+
     return str(resp)
 
-# ---- Web / App API ----
+# =====================
+# API
+# =====================
+
 @app.route("/complaint", methods=["POST"])
 def complaint():
+
     data = request.json
 
     company_id = data.get("company_id")
@@ -367,65 +479,31 @@ def complaint():
         "complaint_id": new_complaint.id
     }), 201
 
-
-@app.route("/setup")
-def setup():
-    sender = "whatsapp:+91YOURNUMBER"  # replace once
-
-    company = Company.query.first()
-    if not company:
-        company = Company(name="Demo IT Company")
-        db.session.add(company)
-        db.session.commit()
-
-    existing = Employee.query.filter_by(phone=sender).first()
-    if not existing:
-        employee = Employee(
-            phone=sender,
-            company_id=company.id,
-            name="Test Employee"
-        )
-        db.session.add(employee)
-        db.session.commit()
-
-    return "Setup complete"
-
 # =====================
-# RUN
+# DEBUG ROUTES
 # =====================
-
-@app.route("/create_hr")
-def create_hr():
-    company = Company.query.first()
-    if not company:
-        return "Create company first"
-
-    hr = HRUser(
-        email="hr@demo.com",
-        company_id=company.id
-    )
-    hr.set_password("hr123")
-
-    db.session.add(hr)
-    db.session.commit()
-
-    return "HR user created: hr@demo.com / hr123"
 
 @app.route("/register_employee")
 def register_employee():
+
     phone = normalize_phone(request.args.get("phone"))
 
     company = Company.query.first()
+
     if not company:
+
         company = Company(name="Default Company")
+
         db.session.add(company)
         db.session.commit()
 
     existing = Employee.query.filter_by(phone=phone).first()
+
     if existing:
         return "Employee already exists"
 
     emp = Employee(phone=phone, company_id=company.id)
+
     db.session.add(emp)
     db.session.commit()
 
@@ -433,10 +511,13 @@ def register_employee():
 
 @app.route("/employees")
 def list_employees():
+
     employees = Employee.query.all()
+
     data = []
 
     for e in employees:
+
         data.append({
             "id": e.id,
             "phone": e.phone,
@@ -445,11 +526,15 @@ def list_employees():
 
     return jsonify(data)
 
-# ✅ Ensure database tables exist on startup (Render compatible)
+# =====================
+# START SERVER
+# =====================
+
 with app.app_context():
     db.create_all()
 
 if __name__ == "__main__":
-    import os
+
     port = int(os.environ.get("PORT", 5000))
+
     app.run(host="0.0.0.0", port=port)
