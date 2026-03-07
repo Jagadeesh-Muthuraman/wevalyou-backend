@@ -321,6 +321,8 @@ def whatsapp():
         user_sessions[sender] = {}
 
     session_data = user_sessions[sender]
+    print("SESSION STATE:", session_data)
+    print("INCOMING:", incoming_msg)
 
     if incoming_lower == "complaint":
 
