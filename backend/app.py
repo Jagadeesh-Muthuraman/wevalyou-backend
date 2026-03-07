@@ -194,7 +194,7 @@ def hr_dashboard():
 def whatsapp():
     incoming_msg = request.form.get("Body", "").strip()
     incoming_lower = incoming_msg.lower()
-    sender = request.form.get("From")
+    sender = request.form.get("From").replace("whatsapp:", "")
     print("WHATSAPP SENDER:", sender)
 
     resp = MessagingResponse()
@@ -395,7 +395,7 @@ def create_hr():
 
 @app.route("/register_employee")
 def register_employee():
-    phone = request.args.get("phone")
+    phone = request.args.get("phone").replace("whatsapp:", "")
 
     company = Company.query.first()
     if not company:
@@ -412,6 +412,20 @@ def register_employee():
     db.session.commit()
 
     return "Employee registered"
+
+@app.route("/employees")
+def list_employees():
+    employees = Employee.query.all()
+    data = []
+
+    for e in employees:
+        data.append({
+            "id": e.id,
+            "phone": e.phone,
+            "company_id": e.company_id
+        })
+
+    return jsonify(data)
 
 # ✅ Ensure database tables exist on startup (Render compatible)
 with app.app_context():
