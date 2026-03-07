@@ -24,6 +24,17 @@ db = SQLAlchemy(app)
 from flask_migrate import Migrate
 migrate = Migrate(app, db)
 
+def normalize_phone(phone):
+    phone = phone.replace("whatsapp:", "").replace(" ", "").strip()
+
+    if phone.startswith("91") and not phone.startswith("+"):
+        phone = "+" + phone
+
+    if not phone.startswith("+"):
+        phone = "+91" + phone
+
+    return phone
+
 class HRUser(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
@@ -194,7 +205,7 @@ def hr_dashboard():
 def whatsapp():
     incoming_msg = request.form.get("Body", "").strip()
     incoming_lower = incoming_msg.lower()
-    sender = request.form.get("From").replace("whatsapp:", "")
+    sender = normalize_phone(request.form.get("From"))
     print("WHATSAPP SENDER:", sender)
 
     resp = MessagingResponse()
@@ -225,7 +236,14 @@ def whatsapp():
         session_data["complaint_type"] = "POSH"
         session_data["step"] = "ask_anonymous"
 
-        reply.body("🚨 POSH Complaint Started.\nDo you want to stay anonymous? Reply YES or NO")
+        body=f"""
+🚨 New {new_complaint.complaint_type} Complaint
+
+Message:
+{complaint_text}
+
+Company ID: {company_id}
+"""
         return str(resp)
 
     # =========================
@@ -395,8 +413,7 @@ def create_hr():
 
 @app.route("/register_employee")
 def register_employee():
-    phone = request.args.get("phone")
-    phone = phone.replace("whatsapp:", "").replace(" ", "")
+    phone = normalize_phone(request.args.get("phone"))
 
     company = Company.query.first()
     if not company:
