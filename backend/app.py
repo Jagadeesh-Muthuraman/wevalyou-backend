@@ -195,6 +195,7 @@ def whatsapp():
     incoming_msg = request.form.get("Body", "").strip()
     incoming_lower = incoming_msg.lower()
     sender = request.form.get("From")
+    print("WHATSAPP SENDER:", sender)
 
     resp = MessagingResponse()
     reply = resp.message()
